@@ -13,13 +13,13 @@ def mcast_receiver(hostport):
     # Join the multicast group
     mcast_group = struct.pack("4sl", socket.inet_aton(hostport[0]), socket.INADDR_ANY)
     recv_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mcast_group)
-    return recv_sock  # Return the configured receiving socket
+    return recv_sock 
 
 
 def mcast_sender():
     """Create a UDP socket for sending messages"""
     send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    return send_sock  # Return the sending socket
+    return send_sock  
 
 
 def parse_cfg(cfgpath):
