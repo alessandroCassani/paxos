@@ -127,7 +127,10 @@ def proposer(config, id):
                 if proposer_state['ack_count'] >= 2:  # Quorum check
                     print(f"Proposer {id}: Value {proposer_state['c-val']} accepted by quorum")
                     send.sendto(Message.decision(proposer_state['c-val'], "DECIDE"), config["learners"])
+                    
                     proposer_state['ack_count'] = 0  # Reset
+                    v_rnds.clear()
+                    v_vals.clear()
 
 # ----------------------------------------------------
 def learner(config, id):
