@@ -99,25 +99,27 @@ def proposer(config, id):
         v_rnd = msg.v_rnd
         v_val = msg.v_val
 
-        # Phase 1B - Collect responses from acceptors
-        if phase == "PHASE_1B" and rnd == proposer_state['c-rnd']:
+        if phase == "PHASE_2A" and rnd == proposer_state['c-rnd']:   # rnd == c_rnd
             v_rnds.append(v_rnd)
-            v_vals.append(v_val if v_val != '' else None)
-
-            if len(v_rnds) >= 2:  # Majority = 2 out of 3
+            v_vals.append(v_val)
+            
+            if len(v_rnds) >= 2: # Quorum
                 k = max(v_rnds)
-                proposer_state['c-val'] = v_vals[v_rnds.index(k)] if k > 0 else proposer_state['c-val']
+
+                if k > 0:
+                    proposer_state['c-val'] = v_vals[v_rnds.index(k)]
+                else:
+                    proposer_state['c-val'] = proposer_state['c-val']
+                     
                 send.sendto(Message.phase_2a(proposer_state['c-rnd'], proposer_state['c-val'], "PHASE_2A"), config["acceptors"])
 
-        # Phase 2B - Handle acknowledgments from acceptors
-        elif phase == "PHASE_2B" and rnd == proposer_state['c-rnd']:
+        elif phase == "PHASE_2B" and rnd == proposer_state['c-rnd']:  # v_rnd == c_rnd
             proposer_state['ack_count'] += 1
 
-            # If a majority of acceptors have acknowledged the value, notify learners (Phase 3)
-            if proposer_state['ack_count'] >= 2:  # Majority = 2 out of 3
-                print(f"Proposer {id}: Value {proposer_state['c-val']} accepted by majority")
+            if proposer_state['ack_count'] >= 2:  # Quorum
+                print(f"Proposer {id}: Value {proposer_state['c-val']} accepted by quorum")
                 send.sendto(Message.decision(proposer_state['c-val'], "DECIDE"), config["learners"])
-                proposer_state['ack_count'] = 0  # Reset for future rounds
+                proposer_state['ack_count'] = 0  # Reset 
 
 # ----------------------------------------------------
 def learner(config, id):
