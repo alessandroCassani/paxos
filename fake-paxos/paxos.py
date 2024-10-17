@@ -60,57 +60,55 @@ def acceptor(config, id):
                 s.sendto(response.encode(), config["learners"])
 
 # ----------------------------------------------------
-# Proposer variables
-proposer_state = {'c-rnd': 0, 'c-val': None}
+# Proposer role
+proposer_state = {'c-rnd': 0, 'c-val': None, 'ack_count': 0}
 
 def proposer(config, id):
-    print(f"-> proposer {id}")
-    r = mcast_receiver(config["proposers"])
-    s = mcast_sender()
-    proposer_state['c-rnd'] += 1  # Generate a unique round number
+    print(f"Proposer {id} running")
+    recv = mcast_receiver(config["proposers"])
+    send = mcast_sender()
 
-    # Send PHASE 1A (prepare) to acceptors
-    s.sendto(f"PHASE1A {proposer_state['c-rnd']}".encode(), config["acceptors"])
+    proposer_state['c-rnd'] += 1
+    send.sendto(f"PHASE1A {proposer_state['c-rnd']}".encode(), config["acceptors"])
 
-    v_rnds = []
-    v_vals = []
+    v_rnds, v_vals = []
 
     while True:
-        msg = r.recv(2**16).decode().split()
-        phase, rnd, v_rnd, v_val = msg[0], int(msg[1]), int(msg[2]), msg[3] if msg[3] != 'None' else None
+        msg = recv.recv(65536).decode().split()
+        phase, rnd, v_rnd, v_val = msg[0], int(msg[1]), int(msg[2]), msg[3]
 
-        # Collect responses from acceptors for PHASE 1B
+        # Phase 1B - Collect responses from acceptors
         if phase == "PHASE1B" and rnd == proposer_state['c-rnd']:
             v_rnds.append(v_rnd)
-            v_vals.append(v_val)
+            v_vals.append(v_val if v_val != 'None' else None)
 
-            # Once a majority of acceptors have replied
-            if len(v_rnds) >= 2:  # Assuming a system with 3 acceptors (majority = 2)
+            if len(v_rnds) >= 2:  # Majority = 2 out of 3
                 k = max(v_rnds)
                 proposer_state['c-val'] = v_vals[v_rnds.index(k)] if k > 0 else proposer_state['c-val']
+                send.sendto(f"PHASE2A {proposer_state['c-rnd']} {proposer_state['c-val']}".encode(), config["acceptors"])
 
-                # Propose the value by sending PHASE 2A to acceptors
-                s.sendto(f"PHASE2A {proposer_state['c-rnd']} {proposer_state['c-val']}".encode(), config["acceptors"])
+        # Phase 2B - Handle acknowledgments from acceptors
+        elif phase == "PHASE2B" and rnd == proposer_state['c-rnd']:
+            proposer_state['ack_count'] += 1
+
+            # If a majority of acceptors have acknowledged the value, notify learners (Phase 3)
+            if proposer_state['ack_count'] >= 2:  # Majority = 2 out of 3
+                print(f"Proposer {id}: Value {proposer_state['c-val']} accepted by majority")
+                send.sendto(f"LEARN {proposer_state['c-val']}".encode(), config["learners"])
+                proposer_state['ack_count'] = 0  # Reset for future rounds
 
 # ----------------------------------------------------
 def learner(config, id):
-    print(f"-> learner {id}")
-    r = mcast_receiver(config["learners"])
-    learned_values = {}
+    print(f"Learner {id} running")
+    recv = mcast_receiver(config["learners"])
 
     while True:
-        msg = r.recv(2**16).decode().split()
-        phase, v_rnd, v_val = msg[0], int(msg[1]), msg[2]
+        msg = recv.recv(65536).decode().split()
+        phase, v_val = msg[0], msg[1]
 
-        if phase == "PHASE2B":
-            # Track votes
-            if v_rnd not in learned_values:
-                learned_values[v_rnd] = v_val
-
-            # When majority votes for the same value, print it as the decided value
-            if len(learned_values) >= 2:  # Assuming majority = 2 out of 3
-                print(f"Learned: {v_val}")
-                sys.stdout.flush()
+        if phase == "LEARN":
+            print(f"Learner {id} learned value: {v_val}")
+            sys.stdout.flush()
 
 # ----------------------------------------------------
 def client(config, id):
