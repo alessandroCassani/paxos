@@ -51,10 +51,10 @@ def acceptor(config, id):
 
             c_rnd = msg.c_rnd
 
-            if c_rnd > acceptor_state[id]['rnd']:  # Update state if the round is higher
+            if c_rnd > acceptor_state[id]['rnd']:  
                 acceptor_state[id]['rnd'] = c_rnd
                 response = Message.phase_1b(acceptor_state[id]['rnd'], acceptor_state[id]['v-rnd'], acceptor_state[id]['v-val'], "PHASE_1B")
-                send.sendto(response, config["proposers"])  # Respond to proposers
+                send.sendto(response, config["proposers"]) 
 
         except Exception as e:
             # Handle PHASE_2A messages
@@ -65,11 +65,11 @@ def acceptor(config, id):
                 c_rnd = msg.c_rnd
                 c_val = msg.c_val
 
-                if c_rnd >= acceptor_state[id]['rnd']:  # Accept if the round is acceptable
+                if c_rnd >= acceptor_state[id]['rnd']:
                     acceptor_state[id]['v-rnd'] = c_rnd
                     acceptor_state[id]['v-val'] = c_val
                     response = Message.phase_2b(acceptor_state[id]['v-rnd'], acceptor_state[id]['v-val'], "PHASE_2B")
-                    send.sendto(response, config["learners"])  # Respond to learners
+                    send.sendto(response, config["learners"]) 
             except Exception as e:
                 print(f"Acceptor {id} received unknown message type or error: {e}")
 
