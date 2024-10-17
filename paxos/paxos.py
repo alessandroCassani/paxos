@@ -32,8 +32,8 @@ def parse_cfg(cfgpath):
     return cfg
 
 # ----------------------------------------------------
+
 # Acceptor variables
-# Each acceptor needs to store its state
 acceptor_state = defaultdict(lambda: {'rnd': 0, 'v-rnd': 0, 'v-val': None})
 
 def acceptor(config, id):
@@ -91,35 +91,43 @@ def proposer(config, id):
 
     while True:
         data = recv.recv(65536)
-        msg = PhaseMessage_pb2.Phase1B()
-        msg.ParseFromString(data)
 
-        phase = msg.phase
-        rnd = msg.rnd
-        v_rnd = msg.v_rnd
-        v_val = msg.v_val
+        if data.startswith('PHASE_1B'):  
+            msg = PhaseMessage_pb2.Phase1B()
+            msg.ParseFromString(data)
 
-        if phase == "PHASE_2A" and rnd == proposer_state['c-rnd']:   # rnd == c_rnd
-            v_rnds.append(v_rnd)
-            v_vals.append(v_val)
-            
-            if len(v_rnds) >= 2: # Quorum
-                k = max(v_rnds)
+            rnd = msg.rnd
+            v_rnd = msg.v_rnd
+            v_val = msg.v_val
 
-                if k > 0:
-                    proposer_state['c-val'] = v_vals[v_rnds.index(k)]
-                else:
-                    proposer_state['c-val'] = proposer_state['c-val']
-                     
-                send.sendto(Message.phase_2a(proposer_state['c-rnd'], proposer_state['c-val'], "PHASE_2A"), config["acceptors"])
+            if rnd == proposer_state['c-rnd']:  
+                v_rnds.append(v_rnd)
+                v_vals.append(v_val)
 
-        elif phase == "PHASE_2B" and rnd == proposer_state['c-rnd']:  # v_rnd == c_rnd
-            proposer_state['ack_count'] += 1
+                if len(v_rnds) >= 2:  # Quorum check
+                    k = max(v_rnds)
 
-            if proposer_state['ack_count'] >= 2:  # Quorum
-                print(f"Proposer {id}: Value {proposer_state['c-val']} accepted by quorum")
-                send.sendto(Message.decision(proposer_state['c-val'], "DECIDE"), config["learners"])
-                proposer_state['ack_count'] = 0  # Reset 
+                    if k > 0:
+                        proposer_state['c-val'] = v_vals[v_rnds.index(k)]
+                    else:
+                        proposer_state['c-val'] = proposer_state['c-val']
+                 
+                    send.sendto(Message.phase_2a(proposer_state['c-rnd'], proposer_state['c-val'], "PHASE_2A"), config["acceptors"])
+
+        else:
+            msg = PhaseMessage_pb2.Phase2B()
+            msg.ParseFromString(data)
+
+            v_rnd = msg.v_rnd
+            v_val = msg.v_val
+        
+            if v_rnd == proposer_state['c-rnd']:
+                proposer_state['ack_count'] += 1
+
+                if proposer_state['ack_count'] >= 2:  # Quorum check
+                    print(f"Proposer {id}: Value {proposer_state['c-val']} accepted by quorum")
+                    send.sendto(Message.decision(proposer_state['c-val'], "DECIDE"), config["learners"])
+                    proposer_state['ack_count'] = 0  # Reset
 
 # ----------------------------------------------------
 def learner(config, id):
