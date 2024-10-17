@@ -37,42 +37,41 @@ def parse_cfg(cfgpath):
 acceptor_state = defaultdict(lambda: {'rnd': 0, 'v-rnd': 0, 'v-val': None})
 
 def acceptor(config, id):
-    print(f"-> acceptor {id}")
-    r = mcast_receiver(config["acceptors"])
-    s = mcast_sender()
+    print(f"-> acceptor {id} running")
+    recv = mcast_receiver(config["acceptors"])
+    send = mcast_sender()
 
     while True:
-        data = r.recv(2**16)
-        msg = PhaseMessage_pb2.Phase1A()
-        msg.ParseFromString(data)
+        data = recv.recv(65536)
 
-        phase = msg.phase
-        c_rnd = msg.c_rnd
+        # Handling PHASE_1A messages
+        try:
+            msg = PhaseMessage_pb2.Phase1A()
+            msg.ParseFromString(data)
 
-        # Process PHASE 1A (prepare request)
-        if phase == "PHASE_1A":
-            if c_rnd > acceptor_state[id]['rnd']:
+            c_rnd = msg.c_rnd
+
+            if c_rnd > acceptor_state[id]['rnd']:  # Update state if the round is higher
                 acceptor_state[id]['rnd'] = c_rnd
-                response = Message.phase_1b(
-                    acceptor_state[id]['rnd'], 
-                    acceptor_state[id]['v-rnd'], 
-                    acceptor_state[id]['v-val'], 
-                    "PHASE_1B"
-                )
-                s.sendto(response, config["proposers"])
-        
-        # Process PHASE 2A (accept request)
-        elif phase == "PHASE_2A":
-            c_val = msg.c_val
-            if c_rnd >= acceptor_state[id]['rnd']:
-                acceptor_state[id]['v-rnd'] = c_rnd
-                acceptor_state[id]['v-val'] = c_val
-                response = Message.phase_2b(
-                    acceptor_state[id]['v-rnd'], 
-                    acceptor_state[id]['v-val'], 
-                    "PHASE_2B"
-                )
-                s.sendto(response, config["learners"])
+                response = Message.phase_1b(acceptor_state[id]['rnd'], acceptor_state[id]['v-rnd'], acceptor_state[id]['v-val'], "PHASE_1B")
+                send.sendto(response, config["proposers"])  # Respond to proposers
+
+        except Exception as e:
+            # Handle PHASE_2A messages
+            try:
+                msg = PhaseMessage_pb2.Phase2A()
+                msg.ParseFromString(data)
+
+                c_rnd = msg.c_rnd
+                c_val = msg.c_val
+
+                if c_rnd >= acceptor_state[id]['rnd']:  # Accept if the round is acceptable
+                    acceptor_state[id]['v-rnd'] = c_rnd
+                    acceptor_state[id]['v-val'] = c_val
+                    response = Message.phase_2b(acceptor_state[id]['v-rnd'], acceptor_state[id]['v-val'], "PHASE_2B")
+                    send.sendto(response, config["learners"])  # Respond to learners
+            except Exception as e:
+                print(f"Acceptor {id} received unknown message type or error: {e}")
 
 # ----------------------------------------------------
 # Proposer role
@@ -92,7 +91,8 @@ def proposer(config, id):
     while True:
         data = recv.recv(65536)
 
-        if data.startswith('PHASE_1B'):  
+        # Handling PHASE_1B messages
+        try:
             msg = PhaseMessage_pb2.Phase1B()
             msg.ParseFromString(data)
 
@@ -114,23 +114,27 @@ def proposer(config, id):
                  
                     send.sendto(Message.phase_2a(proposer_state['c-rnd'], proposer_state['c-val'], "PHASE_2A"), config["acceptors"])
 
-        else:
-            msg = PhaseMessage_pb2.Phase2B()
-            msg.ParseFromString(data)
+        except Exception as e:
+            # Handling PHASE_2B messages
+            try:
+                msg = PhaseMessage_pb2.Phase2B()
+                msg.ParseFromString(data)
 
-            v_rnd = msg.v_rnd
-            v_val = msg.v_val
-        
-            if v_rnd == proposer_state['c-rnd']:
-                proposer_state['ack_count'] += 1
+                v_rnd = msg.v_rnd
+                v_val = msg.v_val
+            
+                if v_rnd == proposer_state['c-rnd']:
+                    proposer_state['ack_count'] += 1
 
-                if proposer_state['ack_count'] >= 2:  # Quorum check
-                    print(f"Proposer {id}: Value {proposer_state['c-val']} accepted by quorum")
-                    send.sendto(Message.decision(proposer_state['c-val'], "DECIDE"), config["learners"])
-                    
-                    proposer_state['ack_count'] = 0  # Reset
-                    v_rnds.clear()
-                    v_vals.clear()
+                    if proposer_state['ack_count'] >= 2:  # Quorum check
+                        print(f"Proposer {id}: Value {proposer_state['c-val']} accepted by quorum")
+                        send.sendto(Message.decision(proposer_state['c-val'], "DECIDE"), config["learners"])
+                        
+                        proposer_state['ack_count'] = 0  # Reset
+                        v_rnds.clear()
+                        v_vals.clear()
+            except Exception as e:
+                print(f"Proposer {id} received unknown message type or error: {e}")
 
 # ----------------------------------------------------
 def learner(config, id):
@@ -139,19 +143,23 @@ def learner(config, id):
 
     while True:
         data = recv.recv(65536)
-        msg = PhaseMessage_pb2.Decide()
-        msg.ParseFromString(data)
 
-        phase = msg.phase
-        v_val = msg.v_val
+        try:
+            msg = PhaseMessage_pb2.Decide()
+            msg.ParseFromString(data)
 
-        if phase == "DECIDE":
-            print(f"Learner {id} learned value: {v_val}")
-            sys.stdout.flush()
+            phase = msg.phase
+            v_val = msg.v_val
+
+            if phase == "DECIDE":
+                print(f"Learner {id} learned value: {v_val}")
+                sys.stdout.flush()
+        except Exception as e:
+            print(f"Learner {id} received unknown message type or error: {e}")
 
 # ----------------------------------------------------
 def client(config, id):
-    print(f"-> client {id}")
+    print(f"-> client {id} running")
     s = mcast_sender()
 
     for value in sys.stdin:
