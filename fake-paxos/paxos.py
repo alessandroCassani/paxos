@@ -2,96 +2,137 @@
 import sys
 import socket
 import struct
+from collections import defaultdict
 
-
+# Multicast receiver for setting up sockets
 def mcast_receiver(hostport):
-    """Create a multicast socket listening to the specified address"""
-    recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)  # Create a UDP socket
-    recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow address reuse
-    recv_sock.bind(hostport)  # Bind to the specified host and port
+    recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    recv_sock.bind(hostport)
 
-    # Join the multicast group
+    # Join multicast group
     mcast_group = struct.pack("4sl", socket.inet_aton(hostport[0]), socket.INADDR_ANY)
     recv_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mcast_group)
-    return recv_sock 
+    return recv_sock
 
-
+# Multicast sender for sending messages
 def mcast_sender():
-    """Create a UDP socket for sending messages"""
     send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    return send_sock  
+    return send_sock
 
-
+# Parse the configuration file for roles and addresses
 def parse_cfg(cfgpath):
-    """Parse the configuration file to extract roles and corresponding host/port mappings"""
     cfg = {}
     with open(cfgpath, "r") as cfgfile:
         for line in cfgfile:
-            (role, host, port) = line.split()  # Split each line into role, host, and port
-            cfg[role] = (host, int(port))  # Store the mapping in the config dictionary
-    return cfg  # Return the parsed configuration
-
+            (role, host, port) = line.split()
+            cfg[role] = (host, int(port))
+    return cfg
 
 # ----------------------------------------------------
-
+# Acceptor variables
+# Each acceptor needs to store its state
+acceptor_state = defaultdict(lambda: {'rnd': 0, 'v-rnd': 0, 'v-val': None})
 
 def acceptor(config, id):
-    """Behavior of an acceptor process"""
-    print("-> acceptor", id)
-    state = {}  # Placeholder for future state management
-    r = mcast_receiver(config["acceptors"])  # Set up a receiver for acceptor messages
-    s = mcast_sender()  # Set up a sender to forward messages
-    while True:
-        msg = r.recv(2**16)  # Receive messages with a maximum size of 64KB
-        # Fake acceptor: forwards messages to the learners
-        if id == 1:
-            # print "acceptor: sending %s to learners" % (msg)
-            s.sendto(msg, config["learners"])  # Forward the message to the learners
+    print(f"-> acceptor {id}")
+    r = mcast_receiver(config["acceptors"])
+    s = mcast_sender()
 
+    while True:
+        msg = r.recv(2**16).decode().split()
+        phase, c_rnd = msg[0], int(msg[1])
+        
+        # Process PHASE 1A (prepare request)
+        if phase == "PHASE1A":
+            if c_rnd > acceptor_state[id]['rnd']:
+                acceptor_state[id]['rnd'] = c_rnd
+                response = f"PHASE1B {acceptor_state[id]['rnd']} {acceptor_state[id]['v-rnd']} {acceptor_state[id]['v-val']}"
+                s.sendto(response.encode(), config["proposers"])
+        
+        # Process PHASE 2A (accept request)
+        elif phase == "PHASE2A":
+            c_val = msg[2]
+            if c_rnd >= acceptor_state[id]['rnd']:
+                acceptor_state[id]['v-rnd'] = c_rnd
+                acceptor_state[id]['v-val'] = c_val
+                response = f"PHASE2B {acceptor_state[id]['v-rnd']} {acceptor_state[id]['v-val']}"
+                s.sendto(response.encode(), config["learners"])
+
+# ----------------------------------------------------
+# Proposer variables
+proposer_state = {'c-rnd': 0, 'c-val': None}
 
 def proposer(config, id):
-    """Behavior of a proposer process"""
-    print("-> proposer", id)
-    r = mcast_receiver(config["proposers"])  # Set up a receiver for proposer messages
-    s = mcast_sender()  # Set up a sender to forward messages
+    print(f"-> proposer {id}")
+    r = mcast_receiver(config["proposers"])
+    s = mcast_sender()
+    proposer_state['c-rnd'] += 1  # Generate a unique round number
+
+    # Send PHASE 1A (prepare) to acceptors
+    s.sendto(f"PHASE1A {proposer_state['c-rnd']}".encode(), config["acceptors"])
+
+    v_rnds = []
+    v_vals = []
+
     while True:
-        msg = r.recv(2**16)  # Receive messages with a maximum size of 64KB
-        # Fake proposer: forwards messages to the acceptors
-        if id == 1:
-            # print "proposer: sending %s to acceptors" % (msg)
-            s.sendto(msg, config["acceptors"])  # Forward the message to the acceptors
+        msg = r.recv(2**16).decode().split()
+        phase, rnd, v_rnd, v_val = msg[0], int(msg[1]), int(msg[2]), msg[3] if msg[3] != 'None' else None
 
+        # Collect responses from acceptors for PHASE 1B
+        if phase == "PHASE1B" and rnd == proposer_state['c-rnd']:
+            v_rnds.append(v_rnd)
+            v_vals.append(v_val)
 
+            # Once a majority of acceptors have replied
+            if len(v_rnds) >= 2:  # Assuming a system with 3 acceptors (majority = 2)
+                k = max(v_rnds)
+                proposer_state['c-val'] = v_vals[v_rnds.index(k)] if k > 0 else proposer_state['c-val']
+
+                # Propose the value by sending PHASE 2A to acceptors
+                s.sendto(f"PHASE2A {proposer_state['c-rnd']} {proposer_state['c-val']}".encode(), config["acceptors"])
+
+# ----------------------------------------------------
 def learner(config, id):
-    """Behavior of a learner process"""
-    r = mcast_receiver(config["learners"])  # Set up a receiver for learner messages
+    print(f"-> learner {id}")
+    r = mcast_receiver(config["learners"])
+    learned_values = {}
+
     while True:
-        msg = r.recv(2**16)  # Receive messages with a maximum size of 64KB
-        print(msg)  # Print the received message (this could be a learned value)
-        sys.stdout.flush()  # Flush the output to ensure immediate printing
+        msg = r.recv(2**16).decode().split()
+        phase, v_rnd, v_val = msg[0], int(msg[1]), msg[2]
 
+        if phase == "PHASE2B":
+            # Track votes
+            if v_rnd not in learned_values:
+                learned_values[v_rnd] = v_val
 
+            # When majority votes for the same value, print it as the decided value
+            if len(learned_values) >= 2:  # Assuming majority = 2 out of 3
+                print(f"Learned: {v_val}")
+                sys.stdout.flush()
+
+# ----------------------------------------------------
 def client(config, id):
-    """Behavior of a client process"""
-    print("-> client ", id)
-    s = mcast_sender()  # Set up a sender to send messages to the proposers
-    for value in sys.stdin:  # Read values from the standard input (client's input)
-        value = value.strip()  # Remove any extra whitespace
-        print("client: sending %s to proposers" % (value))
-        s.sendto(value.encode(), config["proposers"])  # Send the value to the proposers
-    print("client done.")  # Indicate the client is done sending
+    print(f"-> client {id}")
+    s = mcast_sender()
 
+    for value in sys.stdin:
+        value = value.strip()
+        print(f"client: sending {value} to proposers")
+        s.sendto(value.encode(), config["proposers"])
 
+    print("client done.")
+
+# ----------------------------------------------------
 if __name__ == "__main__":
-    # Main entry point of the script
+    # Parse configuration and arguments
+    cfgpath = sys.argv[1]
+    config = parse_cfg(cfgpath)
+    role = sys.argv[2]
+    id = int(sys.argv[3])
 
-    # Parse the configuration file and command-line arguments
-    cfgpath = sys.argv[1]  # Path to the configuration file
-    config = parse_cfg(cfgpath)  # Parse the configuration
-    role = sys.argv[2]  # The role of the process (acceptor, proposer, learner, client)
-    id = int(sys.argv[3])  # The ID of the process
-
-    # Assign the appropriate role function based on the role
+    # Execute the correct role
     if role == "acceptor":
         rolefunc = acceptor
     elif role == "proposer":
@@ -101,5 +142,4 @@ if __name__ == "__main__":
     elif role == "client":
         rolefunc = client
 
-    # Execute the corresponding role function
     rolefunc(config, id)
