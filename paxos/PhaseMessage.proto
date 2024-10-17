@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+
+message Phase1A {
+    int32 c_rnd = 1; 
+    string phase = 2;
+}
+
+message Phase1B {
+    int32 rnd = 1;      
+    int32 v_rnd = 2;   
+    string v_val = 3;  
+    string phase = 4;
+}
+
+message Phase2A {
+    int32 c_rnd = 1;   
+    string c_val = 2;  
+    string phase = 3;
+}
+
+message Phase2B {
+    int32 v_rnd = 1;   
+    string v_val = 2; 
+    string phase = 3; 
+}
+
+message Decide {
+    string v_val = 1;
+    string phase = 2;  
+}

@@ -3,6 +3,8 @@ import sys
 import socket
 import struct
 from collections import defaultdict
+import PhaseMessage_pb2
+import Message
 
 # Multicast receiver for setting up sockets
 def mcast_receiver(hostport):
@@ -40,24 +42,37 @@ def acceptor(config, id):
     s = mcast_sender()
 
     while True:
-        msg = r.recv(2**16).decode().split()
-        phase, c_rnd = msg[0], int(msg[1])
-        
+        data = r.recv(2**16)
+        msg = PhaseMessage_pb2.Phase1A()
+        msg.ParseFromString(data)
+
+        phase = msg.phase
+        c_rnd = msg.c_rnd
+
         # Process PHASE 1A (prepare request)
-        if phase == "PHASE1A":
+        if phase == "PHASE_1A":
             if c_rnd > acceptor_state[id]['rnd']:
                 acceptor_state[id]['rnd'] = c_rnd
-                response = f"PHASE1B {acceptor_state[id]['rnd']} {acceptor_state[id]['v-rnd']} {acceptor_state[id]['v-val']}"
-                s.sendto(response.encode(), config["proposers"])
+                response = Message.phase_1b(
+                    acceptor_state[id]['rnd'], 
+                    acceptor_state[id]['v-rnd'], 
+                    acceptor_state[id]['v-val'], 
+                    "PHASE_1B"
+                )
+                s.sendto(response, config["proposers"])
         
         # Process PHASE 2A (accept request)
-        elif phase == "PHASE2A":
-            c_val = msg[2]
+        elif phase == "PHASE_2A":
+            c_val = msg.c_val
             if c_rnd >= acceptor_state[id]['rnd']:
                 acceptor_state[id]['v-rnd'] = c_rnd
                 acceptor_state[id]['v-val'] = c_val
-                response = f"PHASE2B {acceptor_state[id]['v-rnd']} {acceptor_state[id]['v-val']}"
-                s.sendto(response.encode(), config["learners"])
+                response = Message.phase_2b(
+                    acceptor_state[id]['v-rnd'], 
+                    acceptor_state[id]['v-val'], 
+                    "PHASE_2B"
+                )
+                s.sendto(response, config["learners"])
 
 # ----------------------------------------------------
 # Proposer role
@@ -69,32 +84,39 @@ def proposer(config, id):
     send = mcast_sender()
 
     proposer_state['c-rnd'] += 1
-    send.sendto(f"PHASE1A {proposer_state['c-rnd']}".encode(), config["acceptors"])
+    send.sendto(Message.phase_1a(proposer_state['c-rnd'], "PHASE_1A"), config["acceptors"])
 
-    v_rnds, v_vals = []
+    v_rnds = []
+    v_vals = []
 
     while True:
-        msg = recv.recv(65536).decode().split()
-        phase, rnd, v_rnd, v_val = msg[0], int(msg[1]), int(msg[2]), msg[3]
+        data = recv.recv(65536)
+        msg = PhaseMessage_pb2.Phase1B()
+        msg.ParseFromString(data)
+
+        phase = msg.phase
+        rnd = msg.rnd
+        v_rnd = msg.v_rnd
+        v_val = msg.v_val
 
         # Phase 1B - Collect responses from acceptors
-        if phase == "PHASE1B" and rnd == proposer_state['c-rnd']:
+        if phase == "PHASE_1B" and rnd == proposer_state['c-rnd']:
             v_rnds.append(v_rnd)
-            v_vals.append(v_val if v_val != 'None' else None)
+            v_vals.append(v_val if v_val != '' else None)
 
             if len(v_rnds) >= 2:  # Majority = 2 out of 3
                 k = max(v_rnds)
                 proposer_state['c-val'] = v_vals[v_rnds.index(k)] if k > 0 else proposer_state['c-val']
-                send.sendto(f"PHASE2A {proposer_state['c-rnd']} {proposer_state['c-val']}".encode(), config["acceptors"])
+                send.sendto(Message.phase_2a(proposer_state['c-rnd'], proposer_state['c-val'], "PHASE_2A"), config["acceptors"])
 
         # Phase 2B - Handle acknowledgments from acceptors
-        elif phase == "PHASE2B" and rnd == proposer_state['c-rnd']:
+        elif phase == "PHASE_2B" and rnd == proposer_state['c-rnd']:
             proposer_state['ack_count'] += 1
 
             # If a majority of acceptors have acknowledged the value, notify learners (Phase 3)
             if proposer_state['ack_count'] >= 2:  # Majority = 2 out of 3
                 print(f"Proposer {id}: Value {proposer_state['c-val']} accepted by majority")
-                send.sendto(f"LEARN {proposer_state['c-val']}".encode(), config["learners"])
+                send.sendto(Message.decision(proposer_state['c-val'], "DECIDE"), config["learners"])
                 proposer_state['ack_count'] = 0  # Reset for future rounds
 
 # ----------------------------------------------------
@@ -103,10 +125,14 @@ def learner(config, id):
     recv = mcast_receiver(config["learners"])
 
     while True:
-        msg = recv.recv(65536).decode().split()
-        phase, v_val = msg[0], msg[1]
+        data = recv.recv(65536)
+        msg = PhaseMessage_pb2.Decide()
+        msg.ParseFromString(data)
 
-        if phase == "LEARN":
+        phase = msg.phase
+        v_val = msg.v_val
+
+        if phase == "DECIDE":
             print(f"Learner {id} learned value: {v_val}")
             sys.stdout.flush()
 
